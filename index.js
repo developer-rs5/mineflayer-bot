@@ -8,12 +8,14 @@ app.use(cors())
 app.use(express.json())
 
 const bots = {}
-const logs = []
+const logs = {}
+const manualStops = {} // 🔑 THIS FIXES YOUR ISSUE
 
-function log(msg) {
+function log(name, msg) {
   const line = `[${new Date().toISOString()}] ${msg}`
-  logs.push(line)
-  if (logs.length > 300) logs.shift()
+  if (!logs[name]) logs[name] = []
+  logs[name].push(line)
+  if (logs[name].length > 300) logs[name].shift()
   console.log(line)
 }
 
@@ -33,6 +35,8 @@ const chatMessages = [
 function startBot({ name, host, port, password }) {
   if (bots[name]) return 'Bot already running'
 
+  manualStops[name] = false // 👈 reset stop flag
+
   const bot = mineflayer.createBot({
     host,
     port,
@@ -40,17 +44,19 @@ function startBot({ name, host, port, password }) {
   })
 
   bot.loadPlugin(pathfinder)
-  bots[name] = bot
 
-  let afkInterval, chatInterval, walkInterval
+  bots[name] = {
+    bot,
+    intervals: []
+  }
 
   bot.once('spawn', () => {
-    log(`✅ ${name} joined server`)
+    log(name, `✅ ${name} joined server`)
 
     setTimeout(() => {
       bot.chat(`/register ${password} ${password}`)
       bot.chat(`/login ${password}`)
-      log(`🔐 ${name} tried register/login`)
+      log(name, `🔐 ${name} tried register/login`)
     }, 2000)
 
     const mcData = require('minecraft-data')(bot.version)
@@ -59,27 +65,34 @@ function startBot({ name, host, port, password }) {
     movements.canDig = false
     bot.pathfinder.setMovements(movements)
 
-    afkInterval = advancedAFK(bot)
-    chatInterval = randomChat(bot)
-    walkInterval = randomWalk(bot)
-  })
-
-  bot.on('playerCollect', (collector, itemDrop) => {
-    if (collector.username !== bot.username) return
-    bot.lookAt(itemDrop.position.offset(0, 1, 0))
+    bots[name].intervals.push(advancedAFK(bot))
+    bots[name].intervals.push(randomChat(bot))
+    bots[name].intervals.push(randomWalk(bot))
   })
 
   bot.on('end', () => {
-    log(`❌ ${name} disconnected, reconnecting`)
-    clearInterval(afkInterval)
-    clearInterval(chatInterval)
-    clearInterval(walkInterval)
-    delete bots[name]
-    setTimeout(() => startBot({ name, host, port, password }), 5000)
+    log(name, `❌ ${name} disconnected`)
+
+    // clear intervals
+    if (bots[name]) {
+      bots[name].intervals.forEach(clearInterval)
+      delete bots[name]
+    }
+
+    if (manualStops[name]) {
+      log(name, `🛑 ${name} was manually stopped. No reconnect.`)
+      delete manualStops[name]
+      return
+    }
+
+    log(name, `🔄 ${name} reconnecting in 5s`)
+    setTimeout(() => {
+      startBot({ name, host, port, password })
+    }, 5000)
   })
 
   bot.on('error', err => {
-    log(`⚠️ ${name} error: ${err.message}`)
+    log(name, `⚠️ ${name} error: ${err.message}`)
   })
 
   return 'Bot started'
@@ -97,22 +110,24 @@ function advancedAFK(bot) {
     }
 
     if (Math.random() > 0.7) bot.setControlState('jump', true)
-    setTimeout(() => bot.clearControlStates(), 500)
+    setTimeout(() => bot.clearControlStates(), 400)
 
   }, rand(3000, 6000))
 }
 
-// 🚶 RANDOM WALK USING PATHFINDER
+// 🚶 RANDOM WALK
 function randomWalk(bot) {
   return setInterval(() => {
     if (!bot.entity || bot.pathfinder.isMoving()) return
 
-    const x = bot.entity.position.x + rand(-10, 10)
-    const z = bot.entity.position.z + rand(-10, 10)
-    const y = bot.entity.position.y
-
+    const pos = bot.entity.position
     bot.pathfinder.setGoal(
-      new goals.GoalNear(x, y, z, 1)
+      new goals.GoalNear(
+        pos.x + rand(-10, 10),
+        pos.y,
+        pos.z + rand(-10, 10),
+        1
+      )
     )
   }, rand(8000, 15000))
 }
@@ -123,7 +138,6 @@ function randomChat(bot) {
     if (!bot.entity) return
     const msg = chatMessages[rand(0, chatMessages.length - 1)]
     bot.chat(msg)
-    log(`💬 Bot said: ${msg}`)
   }, rand(120000, 240000))
 }
 
@@ -142,12 +156,15 @@ app.post('/bot/start', (req, res) => {
 
 app.post('/bot/stop', (req, res) => {
   const { name } = req.body
-  const bot = bots[name]
-  if (!bot) return res.status(404).json({ error: 'Bot not found' })
+  const data = bots[name]
+  if (!data) return res.status(404).json({ error: 'Bot not found' })
 
-  bot.quit()
+  manualStops[name] = true
+  data.intervals.forEach(clearInterval)
+  data.bot.quit()
+
   delete bots[name]
-  log(`🛑 ${name} stopped`)
+  log(name, `🛑 ${name} stopped manually`)
   res.json({ status: 'Bot stopped' })
 })
 
@@ -155,10 +172,10 @@ app.get('/bots', (req, res) => {
   res.json(Object.keys(bots))
 })
 
-app.get('/logs', (req, res) => {
-  res.json(logs)
+app.get('/logs/:name', (req, res) => {
+  res.json(logs[req.params.name] || [])
 })
 
 app.listen(3000, () => {
-  log('🌐 API running on port 3000')
+  console.log('🌐 API running on port 3000')
 })
