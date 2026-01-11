@@ -1,7 +1,5 @@
 const express = require('express')
 const mineflayer = require('mineflayer')
-const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
-const mcDataLoader = require('minecraft-data')
 
 const app = express()
 app.use(express.json())
@@ -10,15 +8,15 @@ const bots = {}
 const logs = []
 
 function log(msg) {
-  const entry = `[${new Date().toISOString()}] ${msg}`
-  logs.push(entry)
-  if (logs.length > 500) logs.shift()
-  console.log(entry)
+  const line = `[${new Date().toISOString()}] ${msg}`
+  logs.push(line)
+  if (logs.length > 300) logs.shift()
+  console.log(line)
 }
 
 // 🤖 CREATE BOT
-function createBot({ name, host, port, password }) {
-  if (bots[name]) return 'Bot already exists'
+function startBot({ name, host, port, password }) {
+  if (bots[name]) return 'Bot already running'
 
   const bot = mineflayer.createBot({
     host,
@@ -27,16 +25,11 @@ function createBot({ name, host, port, password }) {
   })
 
   bots[name] = bot
-  bot.loadPlugin(pathfinder)
 
   bot.once('spawn', () => {
-    log(`✅ ${name} spawned`)
+    log(`✅ ${name} joined server`)
 
-    const mcData = mcDataLoader(bot.version)
-    const movements = new Movements(bot, mcData)
-    bot.pathfinder.setMovements(movements)
-
-    // 🔐 Register + Login (AuthMe safe)
+    // 🔐 Register + Login
     setTimeout(() => {
       bot.chat(`/register ${password} ${password}`)
       bot.chat(`/login ${password}`)
@@ -44,14 +37,12 @@ function createBot({ name, host, port, password }) {
     }, 2000)
 
     antiAFK(bot, name)
-    randomWalk(bot)
-    fakeAFK(bot, name)
   })
 
   bot.on('end', () => {
     log(`❌ ${name} disconnected, reconnecting`)
     delete bots[name]
-    setTimeout(() => createBot({ name, host, port, password }), 5000)
+    setTimeout(() => startBot({ name, host, port, password }), 5000)
   })
 
   bot.on('error', err => {
@@ -61,10 +52,16 @@ function createBot({ name, host, port, password }) {
   return 'Bot started'
 }
 
-// 💤 Anti-AFK
+// 💤 Anti-AFK (NO EXTRA PACKAGES)
 function antiAFK(bot, name) {
   setInterval(() => {
     if (!bot.entity) return
+
+    const actions = ['forward', 'back', 'left', 'right']
+    const move = actions[Math.floor(Math.random() * actions.length)]
+
+    bot.setControlState(move, true)
+    setTimeout(() => bot.setControlState(move, false), rand(400, 1200))
 
     bot.setControlState('jump', true)
     setTimeout(() => bot.setControlState('jump', false), 300)
@@ -73,29 +70,7 @@ function antiAFK(bot, name) {
     setTimeout(() => bot.setControlState('sneak', false), 600)
 
     bot.look(Math.random() * Math.PI * 2, 0, true)
-  }, rand(4000, 7000))
-}
-
-// 🚶 Pathfinder walking
-function randomWalk(bot) {
-  setInterval(() => {
-    if (!bot.entity) return
-    const pos = bot.entity.position
-    bot.pathfinder.setGoal(
-      new goals.GoalXZ(
-        pos.x + rand(-8, 8),
-        pos.z + rand(-8, 8)
-      )
-    )
-  }, rand(12000, 20000))
-}
-
-// 😴 Fake AFK
-function fakeAFK(bot, name) {
-  setInterval(() => {
-    log(`😴 ${name} fake AFK`)
-    bot.clearControlStates()
-  }, rand(60000, 120000))
+  }, rand(3000, 6000))
 }
 
 function rand(min, max) {
@@ -112,16 +87,17 @@ app.post('/bot/start', (req, res) => {
   if (!name || !host || !port || !password)
     return res.status(400).json({ error: 'Missing fields' })
 
-  const result = createBot({ name, host, port, password })
+  const result = startBot({ name, host, port, password })
   res.json({ status: result })
 })
 
-// ❌ Stop bot
+// 🛑 Stop bot
 app.post('/bot/stop', (req, res) => {
   const { name } = req.body
-  if (!bots[name]) return res.status(404).json({ error: 'Bot not found' })
+  const bot = bots[name]
+  if (!bot) return res.status(404).json({ error: 'Bot not found' })
 
-  bots[name].quit()
+  bot.quit()
   delete bots[name]
   log(`🛑 ${name} stopped`)
   res.json({ status: 'Bot stopped' })
@@ -138,5 +114,5 @@ app.get('/logs', (req, res) => {
 })
 
 app.listen(3000, () => {
-  log('🌐 API running on http://localhost:3000')
+  log('🌐 API running on port 3000')
 })
