@@ -1,7 +1,9 @@
 const express = require('express')
 const mineflayer = require('mineflayer')
+const cors = require("cors")
 
 const app = express()
+app.use(cors())
 app.use(express.json())
 
 const bots = {}
