@@ -1,6 +1,7 @@
 const express = require('express')
 const mineflayer = require('mineflayer')
 const cors = require("cors")
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 
 const app = express()
 app.use(cors())
@@ -16,7 +17,19 @@ function log(msg) {
   console.log(line)
 }
 
-// 🤖 CREATE BOT
+function rand(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min
+}
+
+const chatMessages = [
+  "this bot is powered by zenuxs 🚀",
+  "join zenuxs at : https://discord.zenuxs.in",
+  "make your own free bot at zenuxs discord server",
+  "zenuxs bots go brrrr 🔥",
+  "coding + minecraft = zenuxs 😎"
+]
+
+// 🤖 START BOT
 function startBot({ name, host, port, password }) {
   if (bots[name]) return 'Bot already running'
 
@@ -26,23 +39,41 @@ function startBot({ name, host, port, password }) {
     username: name
   })
 
+  bot.loadPlugin(pathfinder)
   bots[name] = bot
+
+  let afkInterval, chatInterval, walkInterval
 
   bot.once('spawn', () => {
     log(`✅ ${name} joined server`)
 
-    // 🔐 Register + Login
     setTimeout(() => {
       bot.chat(`/register ${password} ${password}`)
       bot.chat(`/login ${password}`)
       log(`🔐 ${name} tried register/login`)
     }, 2000)
 
-    antiAFK(bot, name)
+    const mcData = require('minecraft-data')(bot.version)
+    const movements = new Movements(bot, mcData)
+    movements.allow1by1towers = false
+    movements.canDig = false
+    bot.pathfinder.setMovements(movements)
+
+    afkInterval = advancedAFK(bot)
+    chatInterval = randomChat(bot)
+    walkInterval = randomWalk(bot)
+  })
+
+  bot.on('playerCollect', (collector, itemDrop) => {
+    if (collector.username !== bot.username) return
+    bot.lookAt(itemDrop.position.offset(0, 1, 0))
   })
 
   bot.on('end', () => {
     log(`❌ ${name} disconnected, reconnecting`)
+    clearInterval(afkInterval)
+    clearInterval(chatInterval)
+    clearInterval(walkInterval)
     delete bots[name]
     setTimeout(() => startBot({ name, host, port, password }), 5000)
   })
@@ -54,36 +85,52 @@ function startBot({ name, host, port, password }) {
   return 'Bot started'
 }
 
-// 💤 Anti-AFK (NO EXTRA PACKAGES)
-function antiAFK(bot, name) {
-  setInterval(() => {
+// 🧍 HUMAN AFK
+function advancedAFK(bot) {
+  return setInterval(() => {
     if (!bot.entity) return
 
-    const actions = ['forward', 'back', 'left', 'right']
-    const move = actions[Math.floor(Math.random() * actions.length)]
+    if (Math.random() > 0.6) {
+      const yaw = Math.random() * Math.PI * 2
+      const pitch = (Math.random() - 0.5) * Math.PI / 4
+      bot.look(yaw, pitch, true)
+    }
 
-    bot.setControlState(move, true)
-    setTimeout(() => bot.setControlState(move, false), rand(400, 1200))
+    if (Math.random() > 0.7) bot.setControlState('jump', true)
+    setTimeout(() => bot.clearControlStates(), 500)
 
-    bot.setControlState('jump', true)
-    setTimeout(() => bot.setControlState('jump', false), 300)
-
-    bot.setControlState('sneak', true)
-    setTimeout(() => bot.setControlState('sneak', false), 600)
-
-    bot.look(Math.random() * Math.PI * 2, 0, true)
   }, rand(3000, 6000))
 }
 
-function rand(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min
+// 🚶 RANDOM WALK USING PATHFINDER
+function randomWalk(bot) {
+  return setInterval(() => {
+    if (!bot.entity || bot.pathfinder.isMoving()) return
+
+    const x = bot.entity.position.x + rand(-10, 10)
+    const z = bot.entity.position.z + rand(-10, 10)
+    const y = bot.entity.position.y
+
+    bot.pathfinder.setGoal(
+      new goals.GoalNear(x, y, z, 1)
+    )
+  }, rand(8000, 15000))
+}
+
+// 💬 RANDOM CHAT
+function randomChat(bot) {
+  return setInterval(() => {
+    if (!bot.entity) return
+    const msg = chatMessages[rand(0, chatMessages.length - 1)]
+    bot.chat(msg)
+    log(`💬 Bot said: ${msg}`)
+  }, rand(120000, 240000))
 }
 
 //
-// 🌐 EXPRESS APIs
+// 🌐 API
 //
 
-// ➕ Start bot
 app.post('/bot/start', (req, res) => {
   const { name, host, port, password } = req.body
   if (!name || !host || !port || !password)
@@ -93,7 +140,6 @@ app.post('/bot/start', (req, res) => {
   res.json({ status: result })
 })
 
-// 🛑 Stop bot
 app.post('/bot/stop', (req, res) => {
   const { name } = req.body
   const bot = bots[name]
@@ -105,12 +151,10 @@ app.post('/bot/stop', (req, res) => {
   res.json({ status: 'Bot stopped' })
 })
 
-// 📋 List bots
 app.get('/bots', (req, res) => {
   res.json(Object.keys(bots))
 })
 
-// 📜 Logs
 app.get('/logs', (req, res) => {
   res.json(logs)
 })
